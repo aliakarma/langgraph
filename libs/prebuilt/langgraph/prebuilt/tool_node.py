@@ -97,7 +97,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.
 if _REPO_ROOT not in sys.path:
     sys.path.append(_REPO_ROOT)
 
-from agentguard.guard_engine import AgentGuardEngine
+from agentguard.guard_engine import AgentGuardEngine  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
