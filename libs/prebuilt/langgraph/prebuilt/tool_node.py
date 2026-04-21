@@ -42,6 +42,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
+import sys
 from collections.abc import Awaitable, Callable
 from copy import copy, deepcopy
 from dataclasses import dataclass, replace
@@ -91,6 +93,12 @@ from langgraph.types import Command, Send, StreamWriter
 from pydantic import BaseModel, ValidationError
 from typing_extensions import TypeVar, Unpack
 
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../"))
+if _REPO_ROOT not in sys.path:
+    sys.path.append(_REPO_ROOT)
+
+from agentguard.guard_engine import AgentGuardEngine
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -102,6 +110,7 @@ if TYPE_CHECKING:
 # messages key
 StateT = TypeVar("StateT", default=dict)
 ContextT = TypeVar("ContextT", default=None)
+
 
 INVALID_TOOL_NAME_ERROR_TEMPLATE = (
     "Error: {requested_tool} is not a valid tool, try one of [{available_tools}]."
@@ -783,10 +792,40 @@ class ToolNode(RunnableCallable):
             # Build injected args mapping once during initialization in a single pass
             self._injected_args[tool_.name] = _get_all_injected_args(tool_)
 
+        self.guard = AgentGuardEngine(use_llm_intent=False)
+        print("\n[SYSTEM] LangGraph ToolNode initialized with AgentGuard security\n")
+
     @property
     def tools_by_name(self) -> dict[str, BaseTool]:
         """Mapping from tool name to BaseTool instance."""
         return self._tools_by_name
+
+    def _evaluate_guard(
+        self,
+        call: ToolCall,
+        config: RunnableConfig,
+    ) -> ToolMessage | None:
+        configurable = config.get("configurable", {})
+        thread_id = "default"
+        if isinstance(configurable, dict):
+            thread_id = str(configurable.get("thread_id", "default"))
+
+        decision = self.guard.evaluate(
+            session_id=thread_id,
+            original_task="User task",
+            tool_name=call["name"],
+            tool_args=call.get("args", {}),
+        )
+
+        if decision.get("final_decision") == "BLOCK":
+            return ToolMessage(
+                content=f"[BLOCKED BY AGENTGUARD] {decision.get('reason', 'Blocked')}",
+                name=call["name"],
+                tool_call_id=call["id"],
+                status="error",
+            )
+
+        return None
 
     def _func(
         self,
@@ -930,6 +969,10 @@ class ToolNode(RunnableCallable):
             # This should never happen if validation works correctly
             msg = f"Tool {call['name']} is not registered with ToolNode"
             raise TypeError(msg)
+
+        guard_decision = self._evaluate_guard(call, config)
+        if guard_decision is not None:
+            return guard_decision
 
         # Inject state, store, and runtime right before invocation
         injected_call = self._inject_tool_args(call, request.runtime, tool)
@@ -1083,6 +1126,10 @@ class ToolNode(RunnableCallable):
             # This should never happen if validation works correctly
             msg = f"Tool {call['name']} is not registered with ToolNode"
             raise TypeError(msg)
+
+        guard_decision = self._evaluate_guard(call, config)
+        if guard_decision is not None:
+            return guard_decision
 
         # Inject state, store, and runtime right before invocation
         injected_call = self._inject_tool_args(call, request.runtime, tool)
